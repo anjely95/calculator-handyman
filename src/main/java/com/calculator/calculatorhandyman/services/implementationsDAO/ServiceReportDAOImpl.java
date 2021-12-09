@@ -22,6 +22,10 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
     protected  final LocalTime nightTimeEnd = LocalTime.parse("07:00");
     protected final Long WEEKLY_MINUTES  = 2880L;
 
+    protected  final int diurnal = 1;
+    protected  final int nocturnal = 2;
+    protected  final int sunday = 3;
+
     boolean OVERTIME;
     Long  totalWeeklyMinutes ;
     ResponseDTO responseDTO;
@@ -37,39 +41,36 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
     @Override
     @Transactional
     public ServiceReport save(ServiceReport entity) {
+        System.out.println("INGRESA SAVE REAL");
         return repository.save(entity);
     }
 
+
     @Override
     public ResponseDTO getServiceReport(String technician, long week) {
+        System.out.println("SI INGRESA !!!");
+
        OVERTIME = false;
        totalWeeklyMinutes = 0L;
        responseDTO = new ResponseDTO();
 
 
         LocalDateTime startDate = utils.getDayOfWeek(week, DayOfWeek.MONDAY).atStartOfDay();
-        LocalDateTime endDate = utils.getDayOfWeek(week, DayOfWeek.SATURDAY).atTime(23,59);
+        LocalDateTime endDateSaturday = utils.getDayOfWeek(week, DayOfWeek.SATURDAY).atTime(23,59);
         LocalDateTime dateStartSunday = utils.getDayOfWeek(week, DayOfWeek.SUNDAY).atStartOfDay();
         LocalDateTime dateEndSunday = utils.getDayOfWeek(week, DayOfWeek.SUNDAY).atTime(23,59);
 
-        List<ServiceReport> list = (List<ServiceReport>) repository.getServiceReportBetween(technician,startDate,endDate);
+        List<ServiceReport> list = (List<ServiceReport>) repository.getServiceReportBetween(technician,startDate,endDateSaturday);
         List<ServiceReport> listSunday = (List<ServiceReport>) repository.getServiceReportBetween(technician, dateStartSunday, dateEndSunday);
 
-        //List<ServiceReport> listSunday = (List<ServiceReport>) repository.getServiceReportToDate(technician, dateStartSunday);
-        //System.out.println("listSunday DOMINGO: "+listSunday+ "technician " +technician);
         if (!list.isEmpty()) {
+
                 list.forEach(obj -> {
-                    System.out.println(" ---------------------------- "+obj);
                     int startDateTime = obj.getStartDateTime().getHour();
                     if (startDateTime >= dayTimeStart.getHour() && startDateTime < dayTimeEnd.getHour())  {
-
-                        dayShift(obj, true, endDate, dateEndSunday);
-                        System.out.println("diurna: "+ responseDTO);
-
+                        calculateWorkHours(obj, diurnal,  dateEndSunday);
                     } else if (startDateTime >= nightTimeStart.getHour() ||  startDateTime < nightTimeEnd.getHour()) {
-
-                        dayShift(obj, false, endDate, dateEndSunday);
-                        System.out.println("nocturna: "+ responseDTO);
+                        calculateWorkHours(obj, nocturnal,  dateEndSunday);
 
                     }
                 });
@@ -77,15 +78,11 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
 
         if (!listSunday.isEmpty()) {
             listSunday.forEach(objS -> {
-                    //System.out.println("OBJS" + objS);
                    sundayDay(objS, dateEndSunday);
                 });
         }
 
-        System.out.println("ANTES DE CONVERT  :"+responseDTO);
-        refactorData(responseDTO);
-        System.out.println("DESPUES DE CONVERT  :"+responseDTO);
-
+        utils.minutesToHoursObj(responseDTO);
         return responseDTO;
     }
 
@@ -93,14 +90,13 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
     private void sundayDay(ServiceReport obj, LocalDateTime dateEndSunday) {
         obj = validateAfterWeek(obj, dateEndSunday);
         if (OVERTIME) {
-            setValueSunday(0L, utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime()));
+            utils.setValueSunday(0L, utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime()), responseDTO);
         }else {
-            validateTimeE(3, utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime()));
+            validateHoursOfOvertime(sunday, utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime()));
         }
 
     }
 
-    // nuevo
     private ServiceReport validateAfterWeek(ServiceReport obj, LocalDateTime dateEndSunday) {
         if (obj.getEndDateTime().isAfter(dateEndSunday)) {
             obj.setEndDateTime(obj.getEndDateTime().with(dateEndSunday));
@@ -108,93 +104,98 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
         return obj;
     }
 
-    private ResponseDTO dayShift( ServiceReport obj, Boolean workingDay, LocalDateTime saturday, LocalDateTime dateEndSunday) {
 
-        obj = validateAfterWeek(obj,dateEndSunday); // nuevo
+    private void calculateWorkHours( ServiceReport obj, Integer typeWorkDay,  LocalDateTime dateEndSunday) {
+
+        boolean setHoursForSunday = false;
+        Long mainShift  = 0L;
+        Long nextShift = 0L;
+
+        LocalDateTime dayTimeEnd = validateDayTimeEnd(obj, typeWorkDay);
+
+        if (dayTimeEnd != null) {
+            if (obj.getEndDateTime().isAfter(dayTimeEnd)) {
+                mainShift = utils.getDuration(obj.getStartDateTime(), dayTimeEnd);
+                nextShift = utils.getDuration(dayTimeEnd, obj.getEndDateTime());
+            } else {
+                mainShift = utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime());
+            }
+        }
 
 
-        boolean sundayDay = false;
-        Long minP  = 0L;
-        Long minS = 0L;
-        LocalDateTime dayTimeEnd = null;
-        if (workingDay) {
-             dayTimeEnd = (obj.getStartDateTime()).with(this.dayTimeEnd);
+      // if (obj.getStartDateTime().getDayOfWeek() == endDateSaturday.getDayOfWeek() && obj.getEndDateTime().getDayOfWeek() == dateEndSunday.getDayOfWeek()) {
+       if (obj.getEndDateTime().getDayOfWeek() == dateEndSunday.getDayOfWeek()) {
+
+           Long timeForSunday = 24L - obj.getStartDateTime().getHour(); //nightTimeStart.getHour();
+           timeForSunday = timeForSunday * 60L;
+
+            Long totalWorkTime = mainShift + nextShift;
+
+            if (totalWorkTime > timeForSunday) {
+                nextShift = totalWorkTime - timeForSunday;
+                mainShift = timeForSunday;
+                setHoursForSunday = true;
+            }
+        }
+
+        setWorkHours(typeWorkDay,setHoursForSunday, mainShift, nextShift );
+
+    }
+
+
+    // SABER EL FINAL DE LA JORNADA
+    private LocalDateTime validateDayTimeEnd(ServiceReport obj, Integer typeWorkDay) {
+        LocalDateTime dayTimeEnd;
+        if (typeWorkDay == diurnal) {
+            dayTimeEnd = (obj.getStartDateTime()).with(this.dayTimeEnd);
         }else  {
             dayTimeEnd = ((obj.getStartDateTime()).with(this.nightTimeEnd));
-            //if (obj.getStartDateTime().getDayOfWeek() == obj.getEndDateTime().getDayOfWeek()  ) {
             if (obj.getStartDateTime().getHour() >= 20 && obj.getStartDateTime().getHour() <= 23  ) {
                 dayTimeEnd =  dayTimeEnd.plusDays(1);
             }
         }
 
-        System.out.println("dayTimeEnd: "+dayTimeEnd);
-
-        if (dayTimeEnd != null) {
-            if (obj.getEndDateTime().isAfter(dayTimeEnd)) {
-                minP = utils.getDuration(obj.getStartDateTime(), dayTimeEnd);
-                minS = utils.getDuration(dayTimeEnd, obj.getEndDateTime());
-            } else {
-                minP = utils.getDuration(obj.getStartDateTime(), obj.getEndDateTime());
-            }
-        }
-
-        System.out.println("RESULTADOS MINUTOS minP: "+minP + "  mins "+minS);
-
-       // if (obj.getStartDateTime().getDayOfWeek() == saturday.getDayOfWeek() && obj.getEndDateTime().getDayOfWeek() == dateEndSunday.getDayOfWeek()) {
-        if (obj.getEndDateTime().getDayOfWeek() == dateEndSunday.getDayOfWeek()) {
-
-            Long range = 24L - obj.getStartDateTime().getHour(); //nightTimeStart.getHour();
-            range = range * 60L;
-
-            Long range2 = minP + minS;
-
-            if (range2 > range) {
-                Long rest = range2 - range;
-                minP = range;
-                minS = rest;
-
-                sundayDay = true;
-            }
-            System.out.println("VALIDACON SABADO----- "+minS + "   -- "+minP+ " raange "+range+ " range 2 "+ range2);
-            //  setValueSunday(0L, minS);
-
-        }
-
-        if (!OVERTIME) {
-
-            validateTimeE(workingDay? 1: 2, minP);
-            if (minS > 0) {
-                if (sundayDay) {
-                    validateTimeE(3, minS);
-                }else {
-                    validateTimeE(workingDay? 2:1, minS);
-                }
-            }
-        } else {
-            if (workingDay) {
-                setValuesDay(responseDTO, 0L,minP);
-
-                if (sundayDay) {
-                    setValueSunday(0L ,minS);
-                } else {
-                    setValuesNight(0L,minS);
-                }
-            } else {
-                if (sundayDay) {
-                    setValueSunday(0L ,minS);
-                } else {
-                    setValuesDay(responseDTO, 0L,minS);
-                }
-                setValuesNight(0L,minP);
-            }
-            update(minP + minS);
-        }
-
-        return responseDTO;
+        return dayTimeEnd;
     }
 
 
-    private ResponseDTO validateTimeE (Integer day, Long minutes) {
+    private void setWorkHours (Integer typeWorkDay, Boolean setHoursForSunday, Long mainShift, Long nextShift ) {
+        if (!OVERTIME) {
+           validateHoursOfOvertime(typeWorkDay, mainShift);
+            if (nextShift > 0) {
+                if (setHoursForSunday) {
+                    validateHoursOfOvertime(sunday, nextShift);
+                }else {
+                    validateHoursOfOvertime(typeWorkDay == diurnal? nocturnal:diurnal, nextShift);
+                }
+            }
+        } else {
+            if (typeWorkDay == diurnal ) validOvertimeDiurnal( setHoursForSunday, mainShift,  nextShift);
+            if (typeWorkDay == nocturnal ) validOvertimeNocturnal( setHoursForSunday, mainShift, nextShift);
+            update(mainShift + nextShift);
+        }
+    }
+
+
+    private void validOvertimeDiurnal( Boolean setHoursForSunday, Long mainShift, Long nextShift) {
+        utils.setValuesDay(0L,mainShift, responseDTO);
+        if (setHoursForSunday) {
+            utils.setValueSunday(0L ,nextShift, responseDTO);
+        } else {
+            utils.setValuesNight(0L,nextShift, responseDTO);
+        }
+    }
+
+    private void validOvertimeNocturnal( Boolean setHoursForSunday, Long mainShift, Long nextShift) {
+        utils.setValuesNight(0L,mainShift, responseDTO);
+        if (setHoursForSunday) {
+            utils.setValueSunday(0L ,nextShift, responseDTO);
+        } else {
+            utils.setValuesDay( 0L,nextShift, responseDTO);
+        }
+    }
+
+    private void validateHoursOfOvertime (Integer typeWorkDay, Long minutes) {
         Long restMinutesNormal = 0L;
         Long restMinutesAdd = 0L;
         if (!OVERTIME) {
@@ -209,75 +210,20 @@ public class ServiceReportDAOImpl implements ServiceReportDAO {
              restMinutesAdd = minutes;
         }
 
-        switch (day) {
-            case 1 : setValuesDay(responseDTO,restMinutesNormal, restMinutesAdd); break;
-            case 2:  setValuesNight(restMinutesNormal, restMinutesAdd); break;
-            case 3:  setValueSunday(restMinutesNormal, restMinutesAdd); break;
+
+        switch (typeWorkDay) {
+            case diurnal: utils.setValuesDay(restMinutesNormal, restMinutesAdd, responseDTO); break;
+            case nocturnal:  utils.setValuesNight(restMinutesNormal, restMinutesAdd, responseDTO); break;
+            case sunday:  utils.setValueSunday(restMinutesNormal, restMinutesAdd, responseDTO); break;
             default: break;
         }
 
         update(restMinutesNormal + restMinutesAdd );
-        return responseDTO;
     }
 
-    private Long update(Long total) {
+    private void update(Long total) {
         totalWeeklyMinutes += total;
-        updateE();
-        return WEEKLY_MINUTES;
-    }
-
-    private boolean updateE() {
         OVERTIME = totalWeeklyMinutes >= WEEKLY_MINUTES;
-        System.out.println("OVERTIME !!!!"+OVERTIME +" -totalWeeklyMinutes: "+totalWeeklyMinutes +" -WEEKLY_MINUTES: "+ WEEKLY_MINUTES);
-        return OVERTIME;
-    }
-
-
-   private void setValuesDay(ResponseDTO responseDTO, Long normalMinutes, Long overtimeMinutes) {
-
-        if ( normalMinutes != null && normalMinutes > 0L) {
-            responseDTO.setNormalDayTime(responseDTO.getNormalDayTime() + normalMinutes);
-        }
-
-        if (overtimeMinutes != null && overtimeMinutes > 0L) {
-            responseDTO.setOvertimeDay(responseDTO.getOvertimeDay() + overtimeMinutes);
-
-        }
-   }
-
-   private ResponseDTO setValuesNight(Long normalMinutes, Long overtimeMinutes) {
-       if ( normalMinutes != null && normalMinutes > 0L) {
-           responseDTO.setNormalNightTime(responseDTO.getNormalNightTime() + normalMinutes);
-       }
-
-       if (overtimeMinutes != null && overtimeMinutes > 0L) {
-           responseDTO.setOvertimeNight(responseDTO.getOvertimeNight() + overtimeMinutes);
-       }
-
-       return responseDTO;
-   }
-
-   private ResponseDTO setValueSunday(Long normalMinutes, Long overtimeMinutes) {
-        System.out.println("ingresa a set: " + normalMinutes + " add " + overtimeMinutes);
-       if ( normalMinutes != null && normalMinutes > 0L) {
-            responseDTO.setNormalSundayTime(responseDTO.getNormalSundayTime() + normalMinutes);
-       }
-
-       if (overtimeMinutes != null && overtimeMinutes > 0L) {
-            responseDTO.setOvertimeSunday(responseDTO.getOvertimeSunday()+ overtimeMinutes);
-       }
-
-       return responseDTO;
-   }
-
-
-    private void refactorData(ResponseDTO dto) {
-        dto.setNormalDayTime(utils.minutesToHours(dto.getNormalDayTime()));
-        dto.setNormalNightTime(utils.minutesToHours(dto.getNormalNightTime()));
-        dto.setOvertimeDay(utils.minutesToHours(dto.getOvertimeDay()));
-        dto.setOvertimeNight(utils.minutesToHours(dto.getOvertimeNight()));
-        dto.setNormalSundayTime(utils.minutesToHours(dto.getNormalSundayTime()));
-        dto.setOvertimeSunday(utils.minutesToHours(dto.getOvertimeSunday()));
     }
 
 }

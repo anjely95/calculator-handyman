@@ -27,14 +27,16 @@ public class ServiceReportController {
     }
 
     @PostMapping
-    public ResponseEntity<?> saveReport(@RequestBody ServiceReport serviceReport, BindingResult result) {
-        Map<String, Object> message = new HashMap<>();
+    public ResponseEntity<?> saveReport(@Valid @RequestBody ServiceReport serviceReport, BindingResult result) {
+       Map<String, Object> message = new HashMap<>();
         if (result.hasErrors()) {
             message.put("success", Boolean.FALSE);
             message.put("errors", getError(result));
+            return ResponseEntity.badRequest().body(message);
         }
 
         ServiceReport save = serviceReportDAO.save(serviceReport);
+        System.out.println("ingresa real11");
         message.put("success", Boolean.TRUE);
         message.put("data", save);
         return ResponseEntity.status(HttpStatus.CREATED).body(message);
@@ -47,7 +49,6 @@ public class ServiceReportController {
         message.put("success", Boolean.TRUE);
         message.put("data", responseDTO);
         return ResponseEntity.status(HttpStatus.OK).body(message);
-      // return null;
     }
 
  //.with(WeekFields.ISO.weekBasedYear(), 2021) // year
